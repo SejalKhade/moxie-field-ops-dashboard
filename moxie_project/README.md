@@ -1,15 +1,44 @@
 # Moxie Field Ops Intelligence Dashboard
 
-A full-stack analytics tool that connects three data streams Moxie's current stack keeps siloed:
-**FieldRoutes job completion data**, **Geotab route efficiency data**, and **HubSpot CRM customer records**.
+> **Full-stack analytics tool** built to eliminate manual Excel joins across three enterprise SaaS platforms — surfacing field operations KPIs in under 200ms through a live, interactive dashboard.
 
-The result: one unified dashboard that surfaces which ZIPs have high cancellation rates, which technicians are losing revenue to inefficient routing, and where scheduling capacity is being wasted.
+**Stack:** Python · Flask · DuckDB · D3.js · SQL (window functions) · GitHub Actions CI · pytest
 
 ---
 
-## The Problem This Solves
+## What This Project Demonstrates
 
-Moxie's current stack (FieldRoutes + Geotab + HubSpot) has no cross-tool visibility layer. Ops managers answer questions like "why is ZIP 75001 cancelling 3x more than 75040?" by exporting CSVs from three separate tools and joining them manually in Excel. This project automates that join at the database layer and serves the answer in under 200ms.
+| Skill Area | What You'll See |
+|---|---|
+| **Backend / API design** | RESTful Flask API with 5 endpoints, clean separation of DB and route logic |
+| **Analytical SQL** | CTEs, `RANK() OVER`, rolling window averages, dimensional joins across a star schema |
+| **Data engineering** | DuckDB star schema: `fact_jobs`, `fact_routes`, `dim_technician` |
+| **Testing** | 28 pytest tests covering status codes, field contracts, and business-logic invariants |
+| **CI/CD** | GitHub Actions pipeline with 85% coverage gate on every push |
+| **Frontend** | D3.js dashboard consuming live API data |
+
+---
+
+## The Problem It Solves
+
+Moxie's ops stack (FieldRoutes + Geotab) has no unified visibility layer. Ops managers manually export CSVs from two tools and join them in Excel to answer questions like:
+
+> *"Why is ZIP 75001 cancelling 3× more than ZIP 75040?"*
+> *"Which technician is driving the most miles for the least revenue?"*
+
+This project automates those joins at the database layer and serves answers through a REST API in **under 200ms**.
+
+---
+
+## Live Demo
+
+```bash
+git clone https://github.com/SejalKhade/moxie-field-ops-dashboard.git
+cd moxie-field-ops-dashboard/moxie_project
+pip install -r requirements.txt
+python generate_data.py   # builds DuckDB with 2,000 jobs · 1,792 routes · 20 techs
+python app.py             # → http://localhost:5050
+```
 
 ---
 
@@ -17,53 +46,34 @@ Moxie's current stack (FieldRoutes + Geotab + HubSpot) has no cross-tool visibil
 
 ```
 FieldRoutes (jobs) ──┐
-                     ├──► DuckDB star schema ──► SQL analytical views ──► Flask API ──► D3.js dashboard
+                     ├──► DuckDB star schema ──► SQL analytical views ──► Flask REST API ──► D3.js dashboard
 Geotab (routes) ─────┘
-                    dim_technician
-                    fact_jobs
-                    fact_routes
-```
 
-**Stack:** Python · Flask · DuckDB · D3.js · GitHub Actions CI
+Tables:  dim_technician · fact_jobs · fact_routes
+Views:   vw_cancel_by_zip · vw_tech_efficiency · vw_scheduling_gaps · vw_cancel_reasons
+```
 
 ---
 
-## KPIs Surfaced
+## KPIs & SQL Techniques
 
-| KPI | Source tables | SQL technique |
-|---|---|---|
-| Cancellation rate by ZIP, ranked | `fact_jobs` | CTE + `RANK() OVER` |
-| Revenue per mile by technician | `fact_jobs` JOIN `fact_routes` JOIN `dim_technician` | Dimensional join + efficiency rank |
-| Daily scheduling gap + 7-day rolling avg | `fact_jobs` | Window function: `AVG() OVER (ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)` |
-| Cancellation reason breakdown | `fact_jobs` | `SUM(COUNT(*)) OVER()` for percentage share |
-
----
-
-## Setup
-
-```bash
-# 1. Install
-pip install -r requirements.txt
-
-# 2. Generate simulated data (2,000 jobs, 1,792 routes, 20 technicians, 20 DFW ZIPs)
-python generate_data.py
-
-# 3. Run
-python app.py
-# → http://localhost:5050
-```
+| KPI | SQL Technique Used |
+|---|---|
+| Cancellation rate by ZIP (ranked) | CTE + `RANK() OVER (ORDER BY cancel_rate DESC)` |
+| Revenue per mile by technician | 3-table dimensional join + efficiency rank |
+| Daily scheduling gap + 7-day rolling avg | `AVG() OVER (ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)` |
+| Cancellation reason % share | `SUM(COUNT(*)) OVER()` for percentage of total |
 
 ---
 
 ## API Endpoints
 
-| Endpoint | Description |
+| Endpoint | Returns |
 |---|---|
-| `GET /` | Dashboard UI |
-| `GET /api/summary` | KPI header tiles |
-| `GET /api/cancel_by_zip` | Top 20 ZIPs by cancellation rate |
-| `GET /api/tech_efficiency` | Revenue/mile by technician with efficiency rank |
-| `GET /api/scheduling_gaps` | Daily job trend with 7-day rolling average |
+| `GET /api/summary` | KPI tiles: total jobs, completion rate, revenue, active techs |
+| `GET /api/cancel_by_zip` | Top 20 ZIPs ranked by cancellation rate |
+| `GET /api/tech_efficiency` | Revenue-per-mile rank for all technicians |
+| `GET /api/scheduling_gaps` | Daily completed vs. capacity with 7-day rolling average |
 | `GET /api/cancel_reasons` | Cancellation reason breakdown with % share |
 
 ---
@@ -74,29 +84,35 @@ python app.py
 pytest tests/ -v --cov=app --cov-report=term-missing
 ```
 
-26 tests covering endpoint status codes, required fields, business-logic invariants (cancellation rate 0–100%, pct_of_cancels sums to 100, dates ordered, ranks sorted).
+**28 tests** across all 5 endpoints — covering:
+- HTTP status codes and response shape
+- Required field contracts on every response object
+- Business-logic invariants: cancel rate stays 0–100%, `pct_of_cancels` sums to 100, dates are ordered, ranks are sorted
 
-CI runs on every push via GitHub Actions (`ci.yml`) with 85% coverage gate.
+CI enforces **85% coverage** on every push via GitHub Actions.
 
 ---
 
 ## Data Model
 
 ```sql
-dim_technician  (tech_id PK, tech_name, region, hire_date, vehicle_type)
+dim_technician  (tech_id PK, tech_name, region, hire_date)
 fact_jobs       (job_id PK, tech_id FK, zip_code, scheduled_at, is_completed,
                  cancel_reason, job_revenue, service_type)
-fact_routes     (route_id PK, job_id FK, tech_id FK, route_date,
-                 miles_driven, drive_minutes, fuel_cost)
+fact_routes     (job_id FK, tech_id FK, date, miles_driven, drive_minutes, fuel_cost)
 ```
 
-Higher cancellation probability seeded in ZIPs 75001, 75060, 75080 — designed to be detectable by the `vw_cancel_by_zip` view.
+Higher cancellation probability is seeded into ZIPs 75001, 75060, 75080 — a deliberate signal detectable by `vw_cancel_by_zip`, validating the analytical layer works correctly.
 
 ---
 
-## What's Next (Production Path)
+## Production Roadmap
 
 - Replace simulated data with live FieldRoutes + Geotab API connectors
 - Add HubSpot customer lifetime value join to `fact_jobs`
-- Deploy to AWS (ECS + RDS or DuckDB on S3 with Motherduck)
+- Deploy to AWS (ECS + DuckDB on S3 / MotherDuck)
 - Role-based auth for ops managers vs. executives
+
+---
+
+*Built by Sejal Khade — [sejalkhade2310@gmail.com](mailto:sejalkhade2310@gmail.com)*
